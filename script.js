@@ -266,3 +266,123 @@ document.getElementById('downloadDataButton').addEventListener('click', async fu
     }
 });
 
+// ----------- AJOUT IMPORT PACK -----------
+
+document.getElementById('importPackButton').addEventListener('click', () => {
+    document.getElementById('importPackInput').click();
+});
+
+document.getElementById('importPackInput').addEventListener('change', async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const loader = document.getElementById('loader');
+    loader.style.display = 'block';
+
+    try {
+        const zip = await JSZip.loadAsync(file);
+
+        // 1. pack.mcmeta
+        const mcmeta = await zip.file('pack.mcmeta').async('string');
+        const meta = JSON.parse(mcmeta);
+        document.getElementById('packName').value = file.name.replace(/\.zip$/, '');
+        document.getElementById('packVersion').value = meta.pack.pack_format;
+        document.getElementById('packDescription').value = meta.pack.description.replace(/\n/g, '\\n');
+
+        // 2. pack.png
+        if (zip.file('pack.png')) {
+            const imgData = await zip.file('pack.png').async('base64');
+            const imagePreview = document.getElementById('imagePreview');
+            imagePreview.style.backgroundImage = `url(data:image/png;base64,${imgData})`;
+            const uploadText = imagePreview.querySelector('.upload-text');
+            if (uploadText) uploadText.style.display = 'none';
+        }
+
+        // 3. assets/minecraft/sounds.json
+        const soundsJson = await zip.file('assets/minecraft/sounds.json').async('string');
+        const sounds = JSON.parse(soundsJson);
+
+        // 4. data/new_music/jukebox_song/*.json
+        const songFiles = [];
+        zip.folder('data/new_music/jukebox_song').forEach((relPath, fileObj) => {
+            songFiles.push(relPath);
+        });
+
+        // Nettoie l’UI
+        document.getElementById('musicDiscContainer').innerHTML = '';
+
+        // Pour chaque musique, on reconstruit l’UI
+        for (const songFile of songFiles) {
+            const songJson = await zip.file('data/new_music/jukebox_song/' + songFile).async('string');
+            const song = JSON.parse(songJson);
+            // Récupère le nom et l’auteur
+            const [author, name] = (song.description || '').split(' - ');
+            // Récupère le nom du son dans sounds.json
+            const soundKey = Object.keys(sounds).find(k => k.endsWith(removeFileExtension(songFile)));
+            let oggFile = null;
+            if (soundKey && sounds[soundKey].sounds && sounds[soundKey].sounds[0]) {
+                const oggPath = 'assets/minecraft/sounds/' + sounds[soundKey].sounds[0].name + '.ogg';
+                if (zip.file(oggPath)) {
+                    oggFile = await zip.file(oggPath).async('blob');
+                }
+            }
+
+            // Ajoute l’UI
+            const musicDiscContainer = document.getElementById('musicDiscContainer');
+            const newMusicDisc = document.createElement('div');
+            newMusicDisc.classList.add('music-disc-input-div');
+            newMusicDisc.innerHTML = `
+                <div class="input-group">
+                    <label for="name">Enter Name:</label>
+                    <input type="text" id="name" name="name" value="${name ? name : ''}">
+                </div>
+                <div class="input-group">
+                    <label for="author">Enter Author Name:</label>
+                    <input type="text" id="author" name="author" value="${author ? author : ''}">
+                </div>
+                <div class="input-group">
+                    <input type="file" class="file-input" name="file" accept="audio/ogg" style="display: none;">
+                    <label class="upload-label">${oggFile ? 'Fichier chargé' : 'Upload File'}</label>
+                </div>
+                <button class="remove-button" onclick="removeMusicDisc(this)">Remove</button>
+            `;
+            musicDiscContainer.appendChild(newMusicDisc);
+
+            // Si on a le fichier ogg, on le met dans l’input file (hack)
+            if (oggFile) {
+                const fileInput = newMusicDisc.querySelector('.file-input');
+                // On ne peut pas mettre un File dans un input type="file" en JS (limite navigateur)
+                // Donc on stocke le fichier dans un attribut pour l’utiliser lors du download
+                fileInput._importedFile = new File([oggFile], sounds[soundKey].sounds[0].name.split('/').pop() + '.ogg', {type: 'audio/ogg'});
+                // On change le label
+                newMusicDisc.querySelector('.upload-label').textContent = fileInput._importedFile.name;
+            }
+
+            // Ajoute les listeners
+            const newFileInput = newMusicDisc.querySelector('.file-input');
+            const newUploadLabel = newMusicDisc.querySelector('.upload-label');
+            newFileInput.addEventListener('change', updateButtonLabel);
+            newUploadLabel.addEventListener('click', () => {
+                newFileInput.click();
+            });
+        }
+    } catch (e) {
+        alert("Erreur lors de l'import : " + e);
+    } finally {
+        loader.style.display = 'none';
+    }
+});
+
+// Patch pour que createMusicDiscJson prenne en compte les fichiers importés
+const originalCreateMusicDiscJson = createMusicDiscJson;
+createMusicDiscJson = async function(zip) {
+    const musicDiscInputs = document.querySelectorAll('.music-disc-input-div input[type="file"]');
+    musicDiscInputs.forEach(input => {
+        if (!input.files.length && input._importedFile) {
+            // Hack pour que FileList soit utilisable
+            const dt = new DataTransfer();
+            dt.items.add(input._importedFile);
+            input.files = dt.files;
+        }
+    });
+    return originalCreateMusicDiscJson(zip);
+};
